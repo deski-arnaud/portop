@@ -316,8 +316,8 @@ func plainRow(r app.Row, cols []column) string {
 }
 
 // coloredRow renders a row with semantic per-cell coloring: state,
-// protocol and CPU load each get their own color so the table reads at
-// a glance without following the cursor.
+// protocol, CPU load and interface exposure each get their own color so
+// the table reads at a glance without following the cursor.
 func coloredRow(r app.Row, cols []column) string {
 	var b strings.Builder
 	for _, c := range cols {
@@ -329,6 +329,8 @@ func coloredRow(r app.Row, cols []column) string {
 			fmt.Fprint(&b, protoStyle(string(r.Protocol)).Render(padded))
 		case "CPU":
 			fmt.Fprint(&b, cpuStyle(r.CPUPercent).Render(padded))
+		case "IFACE":
+			fmt.Fprint(&b, ifaceStyle(r.LocalAddr).Render(padded))
 		default:
 			fmt.Fprint(&b, padded)
 		}
