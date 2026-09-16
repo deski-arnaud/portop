@@ -36,6 +36,15 @@ type Row struct {
 	FirstSeen     bool // true if this socket was not present in the previous scan (see Collector.baseline)
 }
 
+// dockerPortKey identifies a published host port by protocol and port
+// number, matching the shape of docker.PublishedPort's own Type/
+// PublicPort fields — the two pieces of a docker-proxy invocation that
+// distinguish one listener from another.
+type dockerPortKey struct {
+	proto string // "TCP" or "UDP", matching scanner.Protocol's casing
+	port  uint16
+}
+
 // Key uniquely identifies a socket across scans, for CPU sampling and new
 // port detection: protocol/local address/local port is sufficient since
 // the kernel guarantees only one listener per (proto, addr, port) and we
@@ -122,6 +131,12 @@ func (c *Collector) Collect(ctx context.Context, opts Options) ([]Row, error) {
 	currentKeys := make(map[Key]bool, len(conns))
 	cpuByPID := make(map[int]float64)
 
+	// portOwners maps a published host port to its container, built
+	// lazily from docker.PublishedPorts at most once per Collect call
+	// (not per row) and only if a docker-proxy row actually needs it
+	// (see below).
+	var portOwners map[dockerPortKey]string
+
 	for _, conn := range conns {
 		k := keyFor(conn)
 		currentKeys[k] = true
@@ -151,7 +166,24 @@ func (c *Collector) Collect(ctx context.Context, opts Options) ([]Row, error) {
 				row.SystemdUnit = systemdinfo.UnitForPID(conn.PID)
 			}
 			if opts.ResolveDocker && c.docker.Available() {
-				if cid := docker.ContainerIDForPID(conn.PID); cid != "" {
+				cid := docker.ContainerIDForPID(conn.PID)
+				// docker-proxy is a host process, not a container one:
+				// it never shows up in any container's cgroup, so the
+				// PID-based lookup above always misses it. Fall back to
+				// matching the published host port instead.
+				if cid == "" && conn.ProcessName == "docker-proxy" {
+					if portOwners == nil {
+						portOwners = make(map[dockerPortKey]string)
+						for _, p := range c.docker.PublishedPorts(ctx) {
+							if p.State != "" && p.State != "running" {
+								continue
+							}
+							portOwners[dockerPortKey{proto: p.Type, port: p.PublicPort}] = p.ContainerID
+						}
+					}
+					cid = portOwners[dockerPortKey{proto: string(conn.Protocol), port: conn.LocalPort}]
+				}
+				if cid != "" {
 					row.ContainerName = c.docker.ContainerName(ctx, cid)
 				}
 			}
